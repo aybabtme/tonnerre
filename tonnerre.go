@@ -40,11 +40,6 @@ func parseArgs() {
 	}
 }
 
-var (
-	requestQueued int
-	requestSent   int
-)
-
 func main() {
 	parseArgs()
 	cores := runtime.NumCPU()
@@ -66,7 +61,6 @@ func main() {
 
 	for i := 0; i < totalReq; i++ {
 		reqChan <- i
-		requestQueued = i
 	}
 	close(reqChan)
 	log.Printf("All %d requests queued, waiting for workers to finish.\n", totalReq)
