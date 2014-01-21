@@ -69,11 +69,12 @@ func main() {
 		requestQueued = i
 	}
 	close(reqChan)
-
+	log.Printf("All %d requests queued, waiting for workers to finish.\n", totalReq)
 	workers.Wait()
+	log.Printf("All %d workers finished, waiting for responses to be consumed.\n", concurrent)
 	close(respChan)
 	<-done
-
+	log.Println("All done.")
 }
 
 func requestWorker(wg *sync.WaitGroup, req <-chan int, resp chan<- Resp, workerID int) {
@@ -173,8 +174,9 @@ func consumeResponses(resp <-chan Resp) <-chan struct{} {
 			atomic.AddUint64(&byteCount, r.length)
 		}
 
+		log.Printf("All %d responses received. Results:\n", completed)
 		for key, val := range codes {
-			log.Printf("Code: %d, occurences: %d\n", key, val)
+			log.Printf("\tcode=%d, occurences=%d\n", key, val)
 		}
 		die <- struct{}{}
 		done <- struct{}{}
