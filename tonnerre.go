@@ -1,12 +1,11 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -15,16 +14,8 @@ import (
 	human "github.com/dustin/go-humanize"
 )
 
-var (
-	concurrent int
-	goalRps    int
-	duration   time.Duration
-	totalReq   int
-	target     string
-
-	listen  bool
-	port    int
-	respLen int
+const (
+	rateResolution int = 25 //'th of a second
 )
 
 type Resp struct {
@@ -32,32 +23,6 @@ type Resp struct {
 	code   int
 	length uint64
 	err    error
-}
-
-func parseArgs() {
-	// Request mode
-	flag.StringVar(&target, "target", "", "target to which requests will be sent")
-	flag.IntVar(&concurrent, "concurrent", 10, "number of concurrent goroutine that will produce requests")
-	flag.IntVar(&totalReq, "request", 1000, "total number of requests that will be produced")
-	flag.IntVar(&goalRps, "rps", 1<<32, "throttle to that many requests per second")
-	var durationStr string
-	flag.StringVar(&durationStr, "duration", "", "duration of the stress test")
-
-	// Listen mode
-	flag.BoolVar(&listen, "listen", false, "run in listen mode, convenient to be the receiving end of tonnerre requests")
-	flag.IntVar(&port, "port", 8080, "port on which to listen")
-	flag.IntVar(&respLen, "response-len", 1024, "length of the response to return when in listen mode")
-	flag.Parse()
-
-	if len(target) == 0 && !listen {
-		fmt.Fprintln(os.Stderr, "need at least the `target` flag, or to be in listen mode")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
-
-	if len(durationStr) == 0 {
-		duration = time.Hour * 1 << 16 // a very long time
-	}
 }
 
 func main() {
@@ -73,52 +38,33 @@ func main() {
 		return
 	}
 
-	workers := sync.WaitGroup{}
+	workWG := sync.WaitGroup{}
 	reqChan := make(chan int, 2*concurrent)
 	respChan := make(chan Resp, 2*concurrent)
 
 	log.Printf("Starting %d workers", concurrent)
 	for worker := 0; worker < concurrent; worker++ {
-		workers.Add(1)
-		go requestWorker(&workers, reqChan, respChan, worker)
+		workWG.Add(1)
+		go startRequestWorker(&workWG, reqChan, respChan, worker)
 	}
+	go sendTaskToWorkers(reqChan)
 
 	done := consumeResponses(respChan)
 
-	go func() {
-		req := 0
-		// Fill task buffer every second
-		for req < totalReq {
-			select {
-			case <-time.Tick(time.Second / 4):
-				for j := 0; j < goalRps/4 && req < totalReq; j++ {
-					req++
-					reqChan <- req
-				}
-			}
-		}
-		close(reqChan)
-		log.Printf("All %d requests queued, waiting for workers to finish.\n", totalReq)
-	}()
-
-	workers.Wait()
-	log.Printf("All %d workers finished, waiting for responses to be consumed.\n", concurrent)
+	workWG.Wait()
 	close(respChan)
 	<-done
 	log.Println("All done.")
 }
 
-func requestWorker(wg *sync.WaitGroup, req <-chan int, resp chan<- Resp, workerID int) {
-	log.Printf("Worker %d starting", workerID)
+func startRequestWorker(wg *sync.WaitGroup, req <-chan int, resp chan<- Resp, workerID int) {
 	defer wg.Done()
-	buf := make([]byte, 8096)
 	for reqID := range req {
-		resp <- doRequest(reqID, buf)
+		resp <- doRequest(reqID)
 	}
-	log.Printf("Worker %d done", workerID)
 }
 
-func doRequest(reqID int, buf []byte) Resp {
+func doRequest(reqID int) Resp {
 
 	start := time.Now()
 	resp, err := http.Get(target)
@@ -130,27 +76,36 @@ func doRequest(reqID int, buf []byte) Resp {
 
 	if err == nil {
 		r.code = resp.StatusCode
-		r.length, r.err = countBytes(resp.Body, buf)
+		r.length, r.err = countBytes(resp.Body)
 		resp.Body.Close()
 	}
 
 	return r
 }
 
-func countBytes(r io.Reader, buf []byte) (uint64, error) {
-	var count uint64
-	var n int
-	var err error
-	for err == nil {
-		n, err = r.Read(buf)
-		count += uint64(n)
-	}
+func countBytes(r io.Reader) (uint64, error) {
+	count, err := io.Copy(ioutil.Discard, r)
+	return uint64(count), err
+}
 
-	if err != io.EOF {
-		return count, err
-	}
+func sendTaskToWorkers(reqChan chan<- int) {
+	defer close(reqChan)
 
-	return count, nil
+	exhaustion := time.NewTicker(testDuration)
+	rateLimiter := time.NewTicker(time.Second / time.Duration(rateResolution))
+
+	for req := 0; req < totalReq; {
+
+		select {
+		case <-rateLimiter.C:
+			for j := 0; j < goalRps/rateResolution && req < totalReq; j++ {
+				req++
+				reqChan <- req
+			}
+		case <-exhaustion.C:
+			return
+		}
+	}
 }
 
 func consumeResponses(resp <-chan Resp) <-chan struct{} {
@@ -204,11 +159,10 @@ func consumeResponses(resp <-chan Resp) <-chan struct{} {
 			atomic.AddUint64(&byteCount, r.length)
 		}
 
-		log.Printf("All %d responses received. Results:\n", completed)
+		die <- struct{}{}
 		for key, val := range codes {
 			log.Printf("\tcode=%d, occurences=%d\n", key, val)
 		}
-		die <- struct{}{}
 		done <- struct{}{}
 	}(resp, done)
 
