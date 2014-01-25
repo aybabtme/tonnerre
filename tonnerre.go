@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	human "github.com/dustin/go-humanize"
 	"io"
 	"log"
 	"net/http"
@@ -12,12 +11,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	human "github.com/dustin/go-humanize"
 )
 
 var (
 	concurrent int
 	totalReq   int
 	target     string
+
+	listen  bool
+	port    int
+	respLen int
 )
 
 type Resp struct {
@@ -31,10 +36,13 @@ func parseArgs() {
 	flag.IntVar(&concurrent, "concurrent", 10, "number of concurrent goroutine that will produce requests")
 	flag.IntVar(&totalReq, "request", 1000, "total number of requests that will be produced")
 	flag.StringVar(&target, "target", "", "target to which requests will be sent")
+	flag.BoolVar(&listen, "listen", false, "run in listen mode, convenient to be the receiving end of tonnerre requests")
+	flag.IntVar(&port, "port", 8080, "port on which to listen")
+	flag.IntVar(&respLen, "response_len", 1024, "length of the response to return when in listen mode")
 	flag.Parse()
 
-	if len(target) == 0 {
-		fmt.Fprintln(os.Stderr, "need at least the `target` flag")
+	if len(target) == 0 && !listen {
+		fmt.Fprintln(os.Stderr, "need at least the `target` flag, or to be in listen mode")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -47,6 +55,11 @@ func main() {
 	defer runtime.GOMAXPROCS(n)
 
 	log.Printf("Will use %d cores\n", cores)
+
+	if listen {
+		startListen(cores)
+		return
+	}
 
 	workers := sync.WaitGroup{}
 	reqChan := make(chan int, 2*concurrent)
