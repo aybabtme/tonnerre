@@ -17,6 +17,8 @@ import (
 
 var (
 	concurrent int
+	goalRps    int
+	duration   time.Duration
 	totalReq   int
 	target     string
 
@@ -33,18 +35,28 @@ type Resp struct {
 }
 
 func parseArgs() {
+	// Request mode
+	flag.StringVar(&target, "target", "", "target to which requests will be sent")
 	flag.IntVar(&concurrent, "concurrent", 10, "number of concurrent goroutine that will produce requests")
 	flag.IntVar(&totalReq, "request", 1000, "total number of requests that will be produced")
-	flag.StringVar(&target, "target", "", "target to which requests will be sent")
+	flag.IntVar(&goalRps, "rps", 1<<32, "throttle to that many requests per second")
+	var durationStr string
+	flag.StringVar(&durationStr, "duration", "", "duration of the stress test")
+
+	// Listen mode
 	flag.BoolVar(&listen, "listen", false, "run in listen mode, convenient to be the receiving end of tonnerre requests")
 	flag.IntVar(&port, "port", 8080, "port on which to listen")
-	flag.IntVar(&respLen, "response_len", 1024, "length of the response to return when in listen mode")
+	flag.IntVar(&respLen, "response-len", 1024, "length of the response to return when in listen mode")
 	flag.Parse()
 
 	if len(target) == 0 && !listen {
 		fmt.Fprintln(os.Stderr, "need at least the `target` flag, or to be in listen mode")
 		flag.PrintDefaults()
 		os.Exit(1)
+	}
+
+	if len(durationStr) == 0 {
+		duration = time.Hour * 1 << 16 // a very long time
 	}
 }
 
@@ -67,16 +79,28 @@ func main() {
 
 	log.Printf("Starting %d workers", concurrent)
 	for worker := 0; worker < concurrent; worker++ {
+		workers.Add(1)
 		go requestWorker(&workers, reqChan, respChan, worker)
 	}
 
 	done := consumeResponses(respChan)
 
-	for i := 0; i < totalReq; i++ {
-		reqChan <- i
-	}
-	close(reqChan)
-	log.Printf("All %d requests queued, waiting for workers to finish.\n", totalReq)
+	go func() {
+		req := 0
+		// Fill task buffer every second
+		for req < totalReq {
+			select {
+			case <-time.Tick(time.Second / 4):
+				for j := 0; j < goalRps/4 && req < totalReq; j++ {
+					req++
+					reqChan <- req
+				}
+			}
+		}
+		close(reqChan)
+		log.Printf("All %d requests queued, waiting for workers to finish.\n", totalReq)
+	}()
+
 	workers.Wait()
 	log.Printf("All %d workers finished, waiting for responses to be consumed.\n", concurrent)
 	close(respChan)
@@ -86,7 +110,6 @@ func main() {
 
 func requestWorker(wg *sync.WaitGroup, req <-chan int, resp chan<- Resp, workerID int) {
 	log.Printf("Worker %d starting", workerID)
-	wg.Add(1)
 	defer wg.Done()
 	buf := make([]byte, 8096)
 	for reqID := range req {

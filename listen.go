@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/aybabtme/gypsum"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
-	"github.com/aybabtme/gypsum"
 
 	"github.com/aybabtme/humanize"
 )
@@ -119,9 +119,9 @@ func printStatsfunc(inChan <-chan int, outChan <-chan int, errChan <-chan error)
 			diffOut = trafficOut - lastTrafficOut
 
 			fmt.Printf("\r"+
-				"%8dreq, %8s, %8srps, %8sps"+
-				"\t ---> \t"+
-				"%8dreq, %8s, %8srps, %8sps",
+				"%8dreq, %4s, %8srps, %4sps"+
+				"  ---> "+
+				"%8dreq, %4s, %8srps, %4sps",
 				requestIn,
 				humanize.Bytes(uint64(trafficIn)),
 				humanize.Comma(int64(diffReqIn)),
