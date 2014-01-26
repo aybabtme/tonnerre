@@ -92,7 +92,7 @@ func sendTaskToWorkers(reqChan chan<- int) {
 	defer close(reqChan)
 
 	exhaustion := time.NewTicker(testDuration)
-	rateLimiter := time.NewTicker(time.Second / time.Duration(rateResolution))
+	rateLimiter := time.NewTimer(time.Second / time.Duration(rateResolution))
 
 	for req := 0; req < totalReq; {
 
